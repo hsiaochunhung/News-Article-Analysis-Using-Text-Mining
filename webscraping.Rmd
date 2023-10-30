@@ -1,0 +1,651 @@
+---
+title: "Webscraping Script"
+author:
+- "Advaith Rao"
+- "Ayush Oturkar"
+- "Jeanie Hung"
+- "Vanshita Gupta"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output:
+  pdf_document:
+    number_sections: yes
+    toc: yes
+    toc_depth: 4
+    citation_package: natbib
+    fig_caption: yes
+  html_document:
+    toc: yes
+    toc_depth: '4'
+    df_print: paged
+fontsize: 12pt
+biblio-style: chicago
+---
+
+\pagenumbering{arabic}
+\newpage
+
+
+```{r setup, echo = TRUE, message = FALSE, warning = FALSE}
+
+# Specify your packages
+my_packages <- c("tidyverse", 
+                 "gutenbergr", 
+                 "dplyr", 
+                 "tidytext", 
+                 "tidyverse", 
+                 "dplyr", 
+                 "textdata", 
+                 "tm", 
+                 "topicmodels", 
+                 "reshape2",
+                 "gridExtra" , 
+                 "httr",
+                 "jsonlite",
+                 "wordcloud2",
+                 "webshot",
+                 "htmlwidgets",
+                 "glue",
+                 "textmineR", 
+                 "viridis",
+                 "text2vec")
+
+# Get a list of packages which are not installed in the background
+not_installed <- my_packages[!(my_packages %in% installed.packages()[ , "Package"])]    # Extract not installed packages
+
+# Install all the non-installed packages
+if(length(not_installed)) install.packages(not_installed)
+
+library(tidyverse)
+library(gutenbergr)
+library(dplyr)
+library(tidytext)
+library(textdata)
+library(topicmodels)
+library(reshape2)
+library(gridExtra)
+library(ggplot2)
+library(httr)
+library(jsonlite)
+library(htmlwidgets)
+library(glue)
+library(wordcloud2)
+library(textmineR)
+library(topicmodels)
+library(tm)
+library(viridis)
+library(text2vec)
+
+```
+
+# Web Scraping Script
+
+**Google News Webscraping script**
+```{r}
+
+# Give the start and end date
+start_date <- as.Date("2023-01-01")
+end_date <- as.Date("2023-04-01")
+
+# Give the sequence of date format in which you need to 
+date_range <- seq(
+  from = start_date, 
+  to = end_date, 
+  by = "1 week"
+)
+
+# The data format in which the needs to be tracked
+date_range <- format(
+  date_range, 
+  "%Y-%m-%dT00:00:00.000Z"
+)
+
+
+# Google News
+main_json <- data.frame()
+url <- "https://google-news-api1.p.rapidapi.com/search"
+padding <- 0
+
+for (x in 1:10) {
+  queryString <- list(
+    language = "en",
+    from = date_range[x],
+    to = date_range[x+1]
+  )
+  
+  response <- VERB(
+    "GET", 
+    url, 
+    add_headers(
+      'X-RapidAPI-Key' = '<>', 
+      'X-RapidAPI-Host' = 'google-news-api1.p.rapidapi.com'
+    ), 
+    query = queryString, 
+    content_type(
+      "application/octet-stream"
+    )
+  )
+  
+  # Get it into JSON format
+  json_content <- content(
+    response, 
+    "text"
+  )
+  
+  
+  # Parse the content
+  parsed_content <- as.data.frame(
+    fromJSON(
+      json_content
+      )
+  )
+  
+  file <- paste0("data/google_news_data_", x, ".csv")
+  
+  write.csv(
+    parsed_content, 
+    file = file
+  )
+}
+
+```
+We discarded google news because of poor data-quality.
+
+**Bing News Webscraping script**
+```{r}
+
+url <- "https://bing-news-search1.p.rapidapi.com/news/search"
+
+queries <- c("sports", "politics", "healthcare", "finance", "business", "security", "television", "tourism", "education", "technology", "lifestyle")
+
+df <- data.frame()
+
+for (q in queries) {
+  queryString <- list(
+    q = q,
+    setLang = "EN",
+    freshness = "Month",
+    textFormat = "Raw",
+    safeSearch = "Moderate",
+    sortBy = "Date",
+    count = 100
+  )
+  
+  response <- VERB("GET", url, add_headers('X-BingApis-SDK' = 'true', 'X-RapidAPI-Key' = '<>', 'X-RapidAPI-Host' = 'bing-news-search1.p.rapidapi.com'), query = queryString, content_type("application/octet-stream"))
+  
+  json_content <- content(response, "text")
+  parsed_content <- jsonlite::fromJSON(json_content)
+  
+  # Extract the articles
+  articles <- parsed_content$value
+  
+  articles_df <- as.data.frame(articles)
+  
+  # Drop columns B and D
+  articles_df <- articles_df %>% select("_type", name, url, description, provider, datePublished, category )
+  
+  # Append to the main data frame
+  df <- bind_rows(df, articles_df)
+  Sys.sleep(3)
+}
+
+df <- select(df, -provider)
+# Rename the columns
+colnames(df) <- c("article_type", "headline","url", "description", "published_at", "category")
+
+df$news_source <- "bing"
+
+# Print the resulting data frame
+print(df)
+
+x = 1
+file <- paste0("data/bing_news_data_", as.character(x), ".csv")
+  
+# Write the data
+write.csv(
+    articles_df, 
+    file = file,
+  )
+
+
+```
+
+**News API Webscraping script**
+
+```{r}
+
+# Define the news sources and queries to loop over
+news_sources <- c("bbc-news", "cnn")
+queries <- c("sports", "politics", "healthcare", "finance", "business", "security", "television", "tourism", "education", "technology", "lifestyle")
+
+# Define an empty dataframe to store the results
+articles_df <- data.frame()
+
+# Loop over news sources and queries
+for (source in news_sources) {
+  for (query in queries) {
+    
+    # Define the query string
+    queryString <- list(
+      q = query,
+      sources = source,
+      sort_by = 'relevancy'
+    )
+    
+    # Make the API call
+    api_key <- "<>"
+    url <- paste0("https://newsapi.org/v2/everything?apiKey=", api_key)
+    response <- GET(url, query = queryString)
+    
+    # Get the JSON content and parse it
+    json_content <- content(response, "text")
+    parsed_content <- fromJSON(json_content)
+    
+    # Extract the articles and append them to the articles_df
+    articles <- as.data.frame(parsed_content) %>% 
+      select(articles.title, articles.url,articles.content, articles.publishedAt) %>% 
+      mutate(article_type = "NewsArticle",
+             category = query,
+             news_source = source) %>% 
+      rename(headline = articles.title,
+             description = articles.content,
+             published_at = articles.publishedAt,
+             url = articles.url)
+    
+    # Append the articles to the articles_df
+    articles_df <- rbind(articles_df, articles)
+    
+    # Wait for 3 seconds before making the next API call
+    Sys.sleep(3)
+  }
+}
+
+articles_df <-  articles_df %>% select("article_type", "headline","url", "description", "published_at", "category", "news_source")
+
+# Print the first few rows of the resulting dataframe
+head(articles_df)
+
+x = 1
+file <- paste0("data/cnn_bbc_news_data_", as.character(x), ".csv")
+  
+# Write the data
+write.csv(
+    articles_df, 
+    file = file,
+  )
+
+
+
+```
+
+
+**CNBC News Webscraping script**
+```{r}
+
+url <- "https://cnbc.p.rapidapi.com/news/v2/list-trending"
+
+df <- data.frame()
+
+queryString <- list(
+  tag = "Articles",
+  count = "1000"
+)
+
+response <- VERB(
+  "GET", 
+  url,
+  add_headers(
+    'X-RapidAPI-Key' = '<>', 
+    'X-RapidAPI-Host' = 'cnbc.p.rapidapi.com'
+  ),
+  query = queryString
+)
+
+json_string  <- rawToChar(response$content)
+parsed_content <- jsonlite::fromJSON(json_string)
+data <- parsed_content$data$mostPopularEntries$assets
+
+data$article_type <- "NewsArticle"
+data$news_source <- "cnbc-news"
+
+data$category <- sub(".*/(.+?)/?$", "\\1", data$section$url)
+# Drop columns B and D
+data <- data %>% select(article_type, headline, url, description, dateFirstPublished, category, news_source)
+
+# Rename the columns
+colnames(data) <- c("article_type", "headline","url", "description", "published_at", "category", "source")
+
+x = 1
+file <- paste0("data/cnbc_news_data_", as.character(x), ".csv")
+  
+# Write the data
+write.csv(
+    data, 
+    file = file,
+  )
+
+
+```
+
+**NewsCatcher News Webscraping script**
+**1. NewsCatcher - Reuters.com**
+```{r}
+
+x = "reuters-news"
+url <- "https://api.newscatcherapi.com/v2/"
+
+queries <- c("sports", "politics", "healthcare", "finance", "business", "security", "television", "tourism", "education", "technology", "lifestyle")
+
+# Define an empty dataframe to store the results
+articles_df <- data.frame()
+
+# Loop over news sources and queries
+for (query in queries) {
+    tryCatch({
+      # Get current date and time in yyyy-mm-dd format
+      from_date <- "1%20week%20ago"
+      
+      # Create the URL with the updated query parameters
+      url <- paste0("https://api.newscatcherapi.com/v2/search?q=", curl::curl_escape(query), "&from=", from_date, "&page_size=100&sources=","reuters.com")
+      
+      # Set the headers
+      headers <- add_headers('x-api-key' = "<>")
+      
+      # Make the GET request and save the response
+      response <- GET(url, headers)
+      
+      # Convert the response to JSON format and parse it into a list
+      json_data <- jsonlite::fromJSON(rawToChar(response$content))
+      
+      articles <- json_data$articles
+      
+      articles$article_type <- "NewsArticle"
+      articles$news_source <- x
+      articles$category <- query
+      
+      articles <- articles %>% select(article_type, title, link, summary, published_date, category, news_source, country)
+  
+      
+      # Append the articles to the articles_df
+      articles_df <- rbind(articles_df, articles)
+      
+      # Wait for 3 seconds before making the next API call
+      Sys.sleep(3)
+      }, error = function(e) {
+    # Handle the error
+    print(paste("Error Message:", e$message," So Skipping query:", query))
+  })
+}
+
+# Rename the columns
+colnames(articles_df) <- c("article_type", "headline", "url", "description", "published_at", "category", "source", "country")
+
+articles_df <- select(articles_df, -country)
+
+file <- paste0("data/newcatcher_news_data_", as.character(x), ".csv")
+  
+# Write the data
+write.csv(
+    articles_df, 
+    file = file,
+    row.names = FALSE
+  )
+
+
+```
+
+**2. NewsCatcher - nytimes.com**
+```{r}
+x = "nytimes-news"
+url <- "https://api.newscatcherapi.com/v2/"
+
+queries <- c("sports", "politics", "healthcare", "finance", "business", "security", "television", "tourism", "education", "technology", "lifestyle")
+
+# Define an empty dataframe to store the results
+articles_df <- data.frame()
+
+# Loop over news sources and queries
+for (query in queries) {
+    tryCatch({
+      # Get current date and time in yyyy-mm-dd format
+      from_date <- "1%20week%20ago"
+      
+      # Create the URL with the updated query parameters
+      url <- paste0("https://api.newscatcherapi.com/v2/search?q=", curl::curl_escape(query), "&from=", from_date, "&page_size=100&sources=","nytimes.com")
+      
+      # Set the headers
+      headers <- add_headers('x-api-key' = "<>")
+      
+      # Make the GET request and save the response
+      response <- GET(url, headers)
+      
+      # Convert the response to JSON format and parse it into a list
+      json_data <- jsonlite::fromJSON(rawToChar(response$content))
+      
+      articles <- json_data$articles
+      
+      articles$article_type <- "NewsArticle"
+      articles$news_source <- x
+      articles$category <- query
+      
+      articles <- articles %>% select(article_type, title, link, summary, published_date, category, news_source, country)
+  
+      
+      # Append the articles to the articles_df
+      articles_df <- rbind(articles_df, articles)
+      
+      # Wait for 3 seconds before making the next API call
+      Sys.sleep(1)
+      }, error = function(e) {
+    # Handle the error
+    print(paste("Error Message:", e$message," So Skipping query:", query))
+  })
+}
+
+# Rename the columns
+colnames(articles_df) <- c("article_type", "headline", "url", "description", "published_at", "category", "source", "country")
+articles_df <- select(articles_df, -country)
+
+
+file <- paste0("data/newcatcher_news_data_", as.character(x), ".csv")
+  
+# Write the data
+write.csv(
+    articles_df, 
+    file = file,
+    row.names = FALSE
+  )
+
+
+```
+
+**3. NewsCatcher - theguardian.com**
+```{r}
+x = "theguardian-news"
+url <- "https://api.newscatcherapi.com/v2/"
+
+queries <- c("sports", "politics", "healthcare", "finance", "business", "security", "television", "tourism", "education", "technology", "lifestyle")
+
+# Define an empty dataframe to store the results
+articles_df <- data.frame()
+
+# Loop over news sources and queries
+for (query in queries) {
+    tryCatch({
+      # Get current date and time in yyyy-mm-dd format
+      from_date <- "1%20week%20ago"
+      
+      # Create the URL with the updated query parameters
+      url <- paste0("https://api.newscatcherapi.com/v2/search?q=", curl::curl_escape(query), "&from=", from_date, "&page_size=100&sources=","theguardian.com")
+      
+      # Set the headers
+      headers <- add_headers('x-api-key' = "<>")
+      
+      # Make the GET request and save the response
+      response <- GET(url, headers)
+      
+      # Convert the response to JSON format and parse it into a list
+      json_data <- jsonlite::fromJSON(rawToChar(response$content))
+      
+      articles <- json_data$articles
+      
+      articles$article_type <- "NewsArticle"
+      articles$news_source <- x
+      articles$category <- query
+      
+      articles <- articles %>% select(article_type, title, link, summary, published_date, category, news_source, country)
+  
+      
+      # Append the articles to the articles_df
+      articles_df <- rbind(articles_df, articles)
+      
+      # Wait for 3 seconds before making the next API call
+      Sys.sleep(1)
+      }, error = function(e) {
+    # Handle the error
+    print(paste("Error Message:", e$message," So Skipping query:", query))
+  })
+}
+
+# Rename the columns
+colnames(articles_df) <- c("article_type", "headline", "url", "description", "published_at", "category", "source", "country")
+articles_df <- select(articles_df, -country)
+
+file <- paste0("data/newcatcher_news_data_", as.character(x), ".csv")
+  
+# Write the data
+write.csv(
+    articles_df, 
+    file = file,
+    row.names = FALSE
+  )
+
+
+```
+
+**4. NewsCatcher - washingtonpost.com**
+```{r}
+x = "washingtonpost-news"
+url <- "https://api.newscatcherapi.com/v2/"
+
+queries <- c("sports", "politics", "healthcare", "finance", "business", "security", "television", "tourism", "education", "technology", "lifestyle")
+
+# Define an empty dataframe to store the results
+articles_df <- data.frame()
+
+# Loop over news sources and queries
+for (query in queries) {
+    tryCatch({
+      # Get current date and time in yyyy-mm-dd format
+      from_date <- "1%20week%20ago"
+      
+      # Create the URL with the updated query parameters
+      url <- paste0("https://api.newscatcherapi.com/v2/search?q=", curl::curl_escape(query), "&from=", from_date, "&page_size=100&sources=","washingtonpost.com")
+      
+      # Set the headers
+      headers <- add_headers('x-api-key' = "<>")
+      
+      # Make the GET request and save the response
+      response <- GET(url, headers)
+      
+      # Convert the response to JSON format and parse it into a list
+      json_data <- jsonlite::fromJSON(rawToChar(response$content))
+      
+      articles <- json_data$articles
+      
+      articles$article_type <- "NewsArticle"
+      articles$news_source <- x
+      articles$category <- query
+      
+      articles <- articles %>% select(article_type, title, link, summary, published_date, category, news_source, country)
+  
+      
+      # Append the articles to the articles_df
+      articles_df <- rbind(articles_df, articles)
+      
+      # Wait for 3 seconds before making the next API call
+      Sys.sleep(1)
+      }, error = function(e) {
+    # Handle the error
+    print(paste("Error Message:", e$message," So Skipping query:", query))
+  })
+}
+
+# Rename the columns
+colnames(articles_df) <- c("article_type", "headline", "url", "description", "published_at", "category", "source", "country")
+articles_df <- select(articles_df, -country)
+
+file <- paste0("data/newcatcher_news_data_", as.character(x), ".csv")
+  
+# Write the data
+write.csv(
+    articles_df, 
+    file = file,
+    row.names = FALSE
+  )
+
+
+```
+
+**5. NewsCatcher - Associated Press apnews.com**
+```{r}
+x = "associatedpress-news"
+url <- "https://api.newscatcherapi.com/v2/"
+
+queries <- c("sports", "politics", "healthcare", "finance", "business", "security", "television", "tourism", "education", "technology", "lifestyle")
+
+# Define an empty dataframe to store the results
+articles_df <- data.frame()
+
+# Loop over news sources and queries
+for (query in queries) {
+    tryCatch({
+      # Get current date and time in yyyy-mm-dd format
+      from_date <- "1%20week%20ago"
+      
+      # Create the URL with the updated query parameters
+      url <- paste0("https://api.newscatcherapi.com/v2/search?q=", curl::curl_escape(query), "&from=", from_date, "&page_size=100&sources=","apnews.com")
+      
+      # Set the headers
+      headers <- add_headers('x-api-key' = "<>")
+      
+      # Make the GET request and save the response
+      response <- GET(url, headers)
+      
+      # Convert the response to JSON format and parse it into a list
+      json_data <- jsonlite::fromJSON(rawToChar(response$content))
+      
+      articles <- json_data$articles
+      
+      articles$article_type <- "NewsArticle"
+      articles$news_source <- x
+      articles$category <- query
+      
+      articles <- articles %>% select(article_type, title, link, summary, published_date, category, news_source, country)
+  
+      
+      # Append the articles to the articles_df
+      articles_df <- rbind(articles_df, articles)
+      
+      # Wait for 3 seconds before making the next API call
+      Sys.sleep(1)
+      }, error = function(e) {
+    # Handle the error
+    print(paste("Error Message:", e$message," So Skipping query:", query))
+  })
+}
+
+# Rename the columns
+colnames(articles_df) <- c("article_type", "headline", "url", "description", "published_at", "category", "source", "country")
+articles_df <- select(articles_df, -country)
+
+file <- paste0("data/newcatcher_news_data_", as.character(x), ".csv")
+  
+# Write the data
+write.csv(
+    articles_df, 
+    file = file,
+    row.names = FALSE
+  )
+
+
+```

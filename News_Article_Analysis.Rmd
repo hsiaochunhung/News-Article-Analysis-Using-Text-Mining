@@ -1,0 +1,665 @@
+---
+title: "Data Wrangling - News Article Analysis"
+author:
+- "Advaith Rao"
+- "Ayush Oturkar"
+- "Jeanie Hung"
+- "Vanshita Gupta"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output:
+  html_document:
+    toc: yes
+    toc_depth: '4'
+    df_print: paged
+  pdf_document:
+    number_sections: yes
+    toc: yes
+    toc_depth: 4
+    citation_package: natbib
+    fig_caption: yes
+fontsize: 12pt
+biblio-style: chicago
+---
+
+\pagenumbering{arabic}
+\newpage
+
+# Loading required Packages
+```{r setup, echo = TRUE, message = FALSE, warning = FALSE}
+
+# Specify your packages
+my_packages <- c("tidyverse", 
+                 "gutenbergr", 
+                 "dplyr", 
+                 "tidytext", 
+                 "tidyverse", 
+                 "dplyr", 
+                 "textdata", 
+                 "tm", 
+                 "topicmodels", 
+                 "reshape2",
+                 "gridExtra" , 
+                 "httr",
+                 "jsonlite",
+                 "wordcloud2",
+                 "webshot",
+                 "htmlwidgets",
+                 "glue",
+                 "textmineR", 
+                 "viridis",
+                 "text2vec",
+                 "webshot", 
+                 "stringr")
+
+# Get a list of packages which are not installed in the background
+not_installed <- my_packages[
+  !(my_packages %in% installed.packages()[ , "Package"])
+]    # Extract not installed packages
+
+# Install all the non-installed packages
+if(length(not_installed)) install.packages(not_installed)
+
+library(tidyverse)
+library(gutenbergr)
+library(dplyr)
+library(tidytext)
+library(textdata)
+library(topicmodels)
+library(reshape2)
+library(gridExtra)
+library(ggplot2)
+library(httr)
+library(jsonlite)
+library(htmlwidgets)
+library(glue)
+library(wordcloud2)
+library(textmineR)
+library(topicmodels)
+library(tm)
+library(viridis)
+library(text2vec)
+library(webshot)
+library(stringr)
+library(tm)
+
+webshot::install_phantomjs()
+
+```
+
+\newpage
+
+# Combine news data from different sources
+```{r}
+
+# Combining the data
+#The Data Fetch part of our project can be viewed under the markdown file:
+#./webscraping.Rmd
+
+# 1. Read the cnn and bing data
+cnn_bbc_df <- read.csv("data/cnn_bbc_news_data_1.csv")
+bing_df <- read.csv("data/bing_news_data_1.csv")
+
+# 2. Read the NYtimes data
+nytimes_df <- read.csv("data/newcatcher_news_data_nytimes-news.csv")
+nytimes_df <- nytimes_df %>% rename(news_source = source)
+
+# 3. Read the associated news data
+associated_press_df <- read.csv("data/newcatcher_news_data_associatedpress-news.csv")
+associated_press_df <- associated_press_df %>% rename(news_source = source)
+
+# 4. Read the reuters news data
+reuters_df <- read.csv("data/newcatcher_news_data_reuters-news.csv")
+reuters_df <- reuters_df %>% rename(news_source = source)
+
+# 5. Read the guardian news data
+guardian <- read.csv("data/newcatcher_news_data_theguardian-news.csv")
+guardian <- guardian %>% rename(news_source = source)
+
+# 6. Read the Washington Post news data
+washpost_df <- read.csv("data/newcatcher_news_data_washingtonpost-news.csv")
+washpost_df <- washpost_df %>% rename(news_source = source)
+
+# 7. Read the CNBC Post news data
+cnbc_news_df <- read.csv("data/cnbc_news_data_1.csv")
+cnbc_news_df <- cnbc_news_df %>% rename(news_source = source)
+
+# 8. Row bind all the above data
+news_df <- rbind(
+  cnn_bbc_df, bing_df, nytimes_df, associated_press_df, reuters_df, guardian, washpost_df, cnbc_news_df
+)
+
+# Lets print the head
+head(news_df)
+
+```
+
+\newpage
+
+# Data Cleaning
+```{r}
+
+# 1. Duplicate data drop:
+cat("Total Rows before duplicate treatment :", nrow(news_df))
+news_df <- distinct(news_df)
+cat("Total Rows after duplicate treatment :", nrow(news_df))
+
+# 2 Cleaning Heading and description
+clean_text_column <- function(df, col_name) {
+  # convert text to lowercase
+  df[[col_name]] <- tolower(df[[col_name]])
+  
+  # remove punctuation
+  df[[col_name]] <- str_replace_all(df[[col_name]], "[[:punct:]]", "")
+  
+  # remove numbers
+  df[[col_name]] <- str_replace_all(df[[col_name]], "[[:digit:]]", "")
+  
+  # remove non-ASCII characters
+  df[[col_name]] <- str_replace_all(df[[col_name]], "[^[:ascii:]]", "")
+  
+  # remove specific special characters
+  df[[col_name]] <- str_replace_all(df[[col_name]], "\\+|\\-|\\/|\\n", " ")
+  
+  # remove leading/trailing whitespace
+  df[[col_name]] <- str_trim(df[[col_name]])
+  
+  # remove stop words (optional)
+  df[[col_name]] <- removeWords(df[[col_name]], stopwords("english"))
+  
+  # return cleaned data.frame
+  return(df)
+}
+
+# assume your data.frame is called `news_df` and the text column is called `article_text`
+news_df <- clean_text_column(news_df, "headline")
+news_df <- clean_text_column(news_df, "description")
+
+unique(news_df$news_source)
+
+
+# 3. Cleaning category columns
+news_df$category <- tolower(news_df$category)
+news_df$category <- gsub("scienceandtechnology", "technology", news_df$category)
+news_df$category <- gsub("\\bhealth\\b", "healthcare", news_df$category)
+
+# 4. Add unique news id to the news data
+news_df <- news_df %>% 
+  mutate(news_id = 1:nrow(news_df))
+
+```
+
+
+\newpage
+
+# EDA
+
+## 1. Based on News Source
+### Distribution of news sources in the news data
+```{r}
+
+# Distribution of news sources in the news data
+bar_chart <- news_df %>%
+  count(news_source) %>%
+  ggplot(aes(x = news_source, y = n, fill = news_source)) +
+  geom_bar(stat = "identity") +
+  ggtitle("Distribution of news sources in the news data") +
+  xlab("News Source") + 
+  ylab("Total News Count") +
+  theme_classic() +
+  geom_text(aes(label = n), size = 3, angle = 90) +
+  theme(plot.title = element_text(hjust = 0.1, face = "bold", size = 8)) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1, size = 5)) +
+  labs(fill = "News Source") +
+  theme(rect = element_rect(fill = "transparent"))
+
+# Distribution of news sources in the news data - Pie chart view
+pie_chart <- news_df %>%
+  count(news_source) %>%
+  mutate(percent = prop.table(n)*100) %>%
+  ggplot(aes(x = "", y = n, fill = news_source)) +
+  geom_bar(stat = "identity", width = 1) +
+  coord_polar(theta = "y") +
+  ggtitle("Distribution of news sources in the news data") +
+  theme_void() +
+  theme(plot.title = element_text(hjust = 0.1, face = "bold", size = 10), legend.position = "bottom", legend.text = element_text(size = 8)) +
+  theme(rect = element_rect(fill = "transparent")) +
+  geom_text(aes(label = paste0(round(percent), "%")), position = position_stack(vjust = 0.5)) + 
+  labs(fill = "News Source") 
+
+
+# create two-column grid
+grid_plot <- grid.arrange(bar_chart, pie_chart, ncol = 2)
+
+# save the plot with a larger size
+ggsave(
+  "Plots/bar_plot_distribution_of_news_source.png", 
+  plot = bar_chart,
+  height = 6, 
+  width = 10, 
+  dpi = 300, 
+  bg = "transparent"
+)
+
+ggsave(
+  "Plots/pie_plot_distribution_of_news_source.png", 
+  plot = pie_chart, 
+  height = 6, 
+  width = 10, 
+  dpi = 300,  
+  bg = "transparent"
+)
+
+
+```
+
+### Average length of article descriptions by news source
+```{r}
+
+bar_chart <- news_df %>%
+  group_by(news_source) %>%
+  summarize(avg_desc_length = mean(nchar(description))) %>%
+  ggplot(aes(x = news_source, y = avg_desc_length, fill = news_source)) +
+  geom_bar(stat = "identity") +
+  ggtitle("Average length of article descriptions by news source") +
+  xlab("News Source") + 
+  ylab("Average Description Length") +
+  theme_classic() +
+  theme(plot.title = element_text(hjust = 0.5,  face = "bold", size = 10)) + 
+  theme(rect = element_rect(fill = "transparent")) +
+  geom_text(aes(label = as.integer(avg_desc_length)), vjust = -0.5, size = 4) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1, size = 16)) +
+  labs(fill = "News Source") +
+  theme(rect = element_rect(fill = "transparent"))
+
+  
+print(bar_chart)
+
+# save the plot with a larger size
+ggsave(
+  "Plots/avg_description_length.png", 
+  plot = bar_chart, 
+  height = 6, 
+  width = 8, 
+  dpi = 300, 
+  bg = "transparent" 
+)
+
+```
+
+## Plotting top bi-gram and tri-grams in CNN
+
+### Plot n gram function
+```{r}
+c <- c(
+  "#FF0000",
+  "#FF6600", 
+  "#FFCC00",
+  "#FF0066",
+  "#CCFF00",
+  "#66FF00", 
+  "#00FF00", 
+  "#00FF66", 
+  "#00FFCC", 
+  "#00CCFF", 
+  "#0066FF", 
+  "#0000FF", 
+  "#6600FF",
+  "#CC00FF", 
+  "#FF00CC"
+)
+
+plot_ngram <- function(news_df, news_to_plot, n_for_ngram, fill_color) {
+  
+  if (n_for_ngram == 2) {
+    n_gram_txt <- "Bigram"
+  } else {
+    n_gram_txt <- "Trigram"
+  }
+  
+  n_gram <- news_df %>%
+    filter(news_source == news_to_plot) %>%
+    mutate(headline = gsub("[^[:alnum:] ]", "", headline)) %>%
+    unnest_tokens(trigram, headline, token = "ngrams", n = n_for_ngram) %>%
+    filter(!is.na(trigram)) %>%
+    count(trigram, sort = TRUE) %>%
+    head(10) %>%
+    ggplot(aes(x = trigram, y = n)) +
+    geom_bar(stat = "identity", fill = fill_color) +
+    ggtitle(paste("Top 10", n_gram_txt, toupper(news_to_plot), "headlines")) +
+    xlab(n_gram_txt) +
+    ylab("Count") +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+          axis.text.y = element_text(size = 16),
+          plot.title = element_text(hjust = 0.5, face = "bold")) +
+    coord_flip()
+  
+  return(n_gram)
+}
+
+```
+
+## Looping over all the news sources and getting the n-grams and wordcloud
+
+```{r}
+
+# define the list of news sources
+news_sources <- c(
+  "bbc-news", 
+  "cnn", 
+  "bing", 
+  "nytimes-news", 
+  "associatedpress-news", 
+  "reuters-news", 
+  "theguardian-news", 
+  "washingtonpost-news", 
+  "cnbc-news"
+)
+
+i = 1
+# loop over the news sources
+for (news_to_plot in news_sources) {
+  
+  cat("Iteration Number :", i)
+  
+  # plot bigram
+  n_for_ngram <- 2
+  fill_color <- c[i]
+  n_gram <- plot_ngram(news_df, news_to_plot, n_for_ngram, fill_color)
+  ggsave(
+    paste0(
+      "Plots/", news_to_plot, "_bigram_count.png"
+      ), 
+    plot = n_gram, 
+    height = 6, 
+    width = 8, 
+    dpi = 300
+    )
+  
+  # plot trigram
+  n_for_ngram <- 3
+  fill_color <- c[i]
+  n_gram <- plot_ngram(news_df, news_to_plot, n_for_ngram, fill_color)
+  
+  # Save trigram
+  ggsave(paste0("Plots/", news_to_plot, "_trigram_count.png"), plot = n_gram, height = 6, width = 8, dpi = 300)
+  
+  # plot wordcloud
+  word_freq <- news_df %>%
+    filter(news_source == news_to_plot) %>%
+    mutate(headline = gsub("[^[:alnum:] ]", "", headline)) %>%
+    unnest_tokens(word, headline) %>%
+    filter(!is.na(word)) %>%
+    count(word) %>%
+    top_n(n = 50, wt = n)
+  
+  wc <- wordcloud2(data = word_freq, size = 1, color = "random-dark", backgroundColor = "white", shape = "circle", rotateRatio = 0.5)
+  saveWidget(wc, file = "Plots/wordcloud.html")
+  webshot(
+    "Plots/wordcloud.html", 
+    file = paste0(
+      "Plots/", 
+      news_to_plot, 
+      "_headline_wordcloud.png"
+    ), 
+    vwidth = 1200, 
+    vheight = 800
+  )
+  Sys.sleep(3)
+  
+  file.remove("Plots/wordcloud.html")
+  i = i + 1
+ 
+}
+
+
+```
+
+
+\newpage
+
+# Topic Modelling
+
+**We changed the value starting from k=5 all the way up k=12 where we observed that new topics can be added however after k=12 the topics were not clustering properly so we decided to keep k=12**
+
+```{r}
+
+# Get the corpus
+corpus <- Corpus(VectorSource(news_df$description))
+corpus <- tm_map(corpus, stemDocument)
+
+# Create a document term matrix with term frequency weighting
+dtm <- DocumentTermMatrix(corpus, control = list(weighting = weightTf))
+
+# Get TFIDF
+tfidf <- weightTfIdf(dtm)
+
+# Run LDA on the document term matrix
+k <- 12 # number of topics
+lda <- LDA(dtm, k = k, method = "Gibbs", control = list(seed = 1234))
+#tidy(lda)
+
+# Find the top 15 words associated with each topic
+top_words_k3 <- terms(lda, 15)
+
+#as.data.frame(top_words_k3)
+print(top_words_k3)
+
+# get top 10 words for each topic
+top_words_k3 <- terms(lda, 10)
+
+print(top_words_k3)
+
+```
+
+1 - International Conflicts
+2 - Government and political
+3 - Economy news
+4 - Sports news
+5 - Corporate news
+6 - World news 
+7 - Education news
+8 - Local news
+9 - Lifestyle news
+10 - Entertainment news
+11 - Legal news
+12 - Miscellaneous news
+
+
+## Get the topic on the data & remap the topic number
+```{r}
+# get the topics and their terms
+topics <- topics(lda)
+terms <- terms(lda)
+
+# assign topics to documents
+doc_topics <- as.data.frame(lda@gamma)
+doc_topics$topic <- apply(doc_topics, 1, which.max)
+
+# add the topics to the news_df
+news_df$topic <- doc_topics$topic
+
+news_df %>% group_by(category, topic) %>% summarise(n = n(), .groups = 'drop')
+
+# Map the topics
+news_df <- news_df %>%
+  mutate(topic_category = case_when(
+    topic == 1 ~ "International Conflicts",
+    topic == 2 ~ "Political news",
+    topic == 3 ~ "Economy news",
+    topic == 4 ~ "Sports news",
+    topic == 5 ~ "Corporate news",
+    topic == 6 ~ "World news",
+    topic == 7 ~ "Education and healthcare",
+    topic == 8 ~ "Local news",
+    topic == 9 ~ "Tourism & Lifestyle",
+    topic == 10 ~ "Entertainment news",
+    topic == 11 ~ "Legal news",
+    topic == 12 ~ "Miscellaneous news",
+    TRUE ~ NA_character_
+  ))
+
+```
+
+
+## Distribution of News category in the Data
+
+```{r}
+
+# Define custom color palette
+news_colors <- c(
+  "#006699", 
+  "#E34B00", 
+  "#CC6600", 
+  "#669900", 
+  "#993399", 
+  "#FFCC00", 
+  "#0099CC", 
+  "#FF6600", 
+  "#993300", 
+  "#6699CC", 
+  "#FF33CC", 
+  "#3366CC"
+)
+
+news_cat_pie <- news_df %>%
+            count(topic_category) %>%
+            mutate(perc = n / sum(n)) %>%
+            ggplot(aes(
+              x = "", 
+              y = n, 
+              fill = topic_category, 
+              label = scales::percent(perc, accuracy = 0.1)
+              )
+            ) +
+            geom_bar(stat = "identity", width = 1) +
+            coord_polar("y", start = 0) +
+            ggtitle("Distribution of categories in the News Data") +
+            scale_fill_manual(values = news_colors) +
+            labs(fill = "Topics Category", label = NULL) +
+            theme_void() +
+            theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+            theme(rect = element_rect(fill = "transparent")) +
+            geom_text(position = position_stack(vjust = 0.5), size = 3)
+
+print(news_cat_pie)
+
+# save the plot with a larger size
+ggsave(
+  "Plots/news_category_afterLDA_count.png", 
+  plot = news_cat_pie, 
+  height = 6, 
+  width = 8, 
+  dpi = 300, 
+  bg = "transparent"
+)
+
+```
+
+\newpage
+
+# Sentiment Analysis
+
+## By Topic Category
+
+```{r}
+
+df <- news_df %>%
+     select(topic_category, headline)
+
+# Perform sentiment analysis with Afinn lexicon
+afinn_sentiments <- df %>%
+  unnest_tokens(word, headline) %>%
+  inner_join(get_sentiments("afinn"), by = "word") %>%
+  group_by(topic_category, value) %>%
+  summarize(count = n(), .groups = "drop") %>%
+  mutate(sentiment = ifelse(value > 0, "positive", ifelse(value==0, "neutral", "negative")), lexicon = "Afinn")
+
+
+# Perform sentiment analysis with Bing lexicon
+bing_sentiments <- df %>%
+  unnest_tokens(word, headline) %>%
+  inner_join(get_sentiments("bing"), by = "word") %>%
+  group_by(topic_category, sentiment) %>%
+  summarize(count = n(), .groups = "drop") %>%
+  mutate(lexicon = "Bing")
+
+# Combine the results from both lexicons
+sentiments <- bind_rows(afinn_sentiments, bing_sentiments)
+
+# Plot the sentiments
+sentiment_split <-ggplot(sentiments, aes(x = topic_category, y = count, fill = sentiment)) +
+                geom_col(position = "stack") +
+                facet_wrap(~ lexicon, ncol = 2) +
+                labs(title = "Overall Headline Sentiments by Topic and Lexicon",
+                     x = "Topic",
+                     y = "Count",
+                     fill = "Sentiment") +
+                scale_fill_manual(values = c("positive" = "forestgreen", "negative" = "#e6194b")) +
+                theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+                theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+  
+print(sentiment_split)
+
+# save the plot with a larger size
+ggsave(
+  "Plots/sentiment_bytopic_count.png", 
+  plot = sentiment_split, 
+  height = 6, 
+  width = 8, 
+  dpi = 300
+)
+
+```
+
+
+## By Source
+```{r}
+
+df <- news_df %>%
+     select(news_source, headline)
+
+# Perform sentiment analysis with Afinn lexicon
+afinn_sentiments <- df %>%
+  unnest_tokens(word, headline) %>%
+  inner_join(get_sentiments("afinn"), by = "word") %>%
+  group_by(news_source, value) %>%
+  summarize(count = n(), .groups = "drop") %>%
+  mutate(sentiment = ifelse(value > 0, "positive", ifelse(value==0, "neutral", "negative")), lexicon = "Afinn")
+
+
+# Perform sentiment analysis with Bing lexicon
+bing_sentiments <- df %>%
+  unnest_tokens(word, headline) %>%
+  inner_join(get_sentiments("bing"), by = "word") %>%
+  group_by(news_source, sentiment) %>%
+  summarize(count = n(), .groups = "drop") %>%
+  mutate(lexicon = "Bing")
+
+# Combine the results from both lexicons
+sentiments <- bind_rows(afinn_sentiments, bing_sentiments)
+
+# Plot the sentiments
+sentiment_split <-ggplot(sentiments, aes(x = news_source, y = count, fill = sentiment)) +
+                geom_col(position = "stack") +
+                facet_wrap(~ lexicon, ncol = 2) +
+                labs(title = "Overall Headline Sentiments by News Source and Lexicon",
+                     x = "Topic",
+                     y = "Count",
+                     fill = "Sentiment") +
+                scale_fill_manual(values = c("positive" = "forestgreen", "negative" = "#e6194b")) +
+                theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+                theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+  
+print(sentiment_split)
+
+# save the plot with a larger size
+ggsave(
+  "Plots/sentiment_bysource_count.png", 
+  plot = sentiment_split, 
+  height = 6, 
+  width = 8, 
+  dpi = 300, 
+  bg = "transparent"
+)
+
+```
